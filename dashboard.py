@@ -1,354 +1,285 @@
-# """
-# dashboard_screen.py
-# RC Car Dashboard — F1 Style
-# Full-screen track background with floating UI, no panels or boxes.
-# """
+"""
+engineer.py
+Engineer dashboard — steering angle, speed, battery, connection + live graphs.
 
-# import socket
-# import time
-# import math
-# import datetime
-# import pygame
-# import constants
+Controls (keyboard OR Xbox controller):
+  Keyboard  : LEFT / RIGHT arrows = steer | UP = throttle | ESC = back
+  Xbox      : Left stick X = steer | Right trigger = throttle | B = back
+"""
 
-# # ─── Init ────────────────────────────────────────────────────────────────────
+import pygame
+import sys
+import time
+import math
+import random
+from collections import deque
 
-# sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# ── Config ────────────────────────────────────────────────────
+WIDTH, HEIGHT = 900, 540
+FPS           = 30
+TITLE         = "Engineer Dashboard"
+HISTORY_SECS  = 20
+ESP32_IP      = "192.168.50.223"
 
-# pygame.init()
-# screen = pygame.display.set_mode(constants.Graphics.SIZE)
-# pygame.display.set_caption("Tokyo Drift RC  //  F1 DASHBOARD")
-# clock = pygame.time.Clock()
+# ── Motor constants ───────────────────────────────────────────
+MOTOR_VOLTAGE = 6.0
+MOTOR_RPM     = 1500.0
+KV            = MOTOR_RPM / MOTOR_VOLTAGE   # 250 RPM/V
+GEAR_RATIO    = 3.23
+WHEEL_R       = 0.02                        # meters
 
-# W, H = constants.Graphics.WINDOW_WIDTH, constants.Graphics.WINDOW_HEIGHT  # 894 x 601
-# # ─── Colours ─────────────────────────────────────────────────────────────────
+RPM_MAX       = (MOTOR_VOLTAGE * KV) / GEAR_RATIO
+V_MAX_MS      = (RPM_MAX * 2 * math.pi * WHEEL_R) / 60
+SPEED_MAX     = round(V_MAX_MS * 3.6, 1)   # ~3.5 km/h
 
-# TEXT_WHITE    = (240, 240, 240)
-# TEXT_DIM      = (150, 155, 165)
-# TEXT_YELLOW   = (220, 178, 35)
-# TEXT_GREEN    = (72, 200, 110)
-# TEXT_RED      = (210, 55, 55)
-# GRAPH_LINE    = (255, 255, 255)
-# GRAPH_AXIS    = (120, 125, 135)
-# THROTTLE_FILL = (195, 155, 28)
-# THROTTLE_BG   = (40, 42, 50, 160)
-# STEER_MARKER  = (200, 202, 210)
+def calc_speed(volts):
+    rpm  = (volts * KV) / GEAR_RATIO
+    v_ms = (rpm * 2 * math.pi * WHEEL_R) / 60
+    return round(v_ms * 3.6, 2)
 
+# ── Colors ────────────────────────────────────────────────────
+BG         = (10,  10,  18)
+PANEL_BG   = (13,  13,  20)
+BORDER     = (58,  58,  92)
+BORDER_DIM = (30,  30,  52)
+TEXT       = (224, 224, 255)
+TEXT_DIM   = (90,  90,  138)
+PURPLE     = (192, 132, 252)
+BLUE       = (56,  189, 248)
+GREEN      = (74,  222, 128)
+RED        = (248, 113, 113)
+YELLOW     = (255, 200, 50)
+DARK       = (26,  26,  46)
 
-# # ─── Fonts ───────────────────────────────────────────────────────────────────
-
-# def sf(names, size, bold=False):
-#     for n in names:
-#         try:
-#             f = pygame.font.SysFont(n, size, bold=bold)
-#             if f: return f
-#         except: pass
-#     return pygame.font.Font(None, size)
-
-# SANS = ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"]
-
-# f_huge      = sf(SANS, 56, bold=True)   # 69%
-# f_big       = sf(SANS, 38, bold=True)   # 12° L
-# f_med       = sf(SANS, 20, bold=True)   # DATA
-# f_label     = sf(SANS, 13, bold=False)  # dim labels
-# f_label_b   = sf(SANS, 15, bold=True)   # data values
-# f_tiny      = sf(SANS, 11)
+# ── Fonts ─────────────────────────────────────────────────────
+pygame.init()
+FONT_SM  = pygame.font.SysFont("couriernew", 13, bold=True)
+FONT_MD  = pygame.font.SysFont("couriernew", 16, bold=True)
+FONT_LG  = pygame.font.SysFont("couriernew", 32, bold=True)
+FONT_HDR = pygame.font.SysFont("couriernew", 18, bold=True)
 
 
-# # ─── Track → image mapping ───────────────────────────────────────────────────
+# ── Draw helpers ──────────────────────────────────────────────
+def panel(surf, rect, title):
+    pygame.draw.rect(surf, PANEL_BG, rect)
+    pygame.draw.rect(surf, BORDER, rect, 2)
+    surf.blit(FONT_SM.render(title, True, TEXT_DIM), (rect.x + 10, rect.y + 8))
 
-# DOW_TRACK = [
-#     "Silverstone",  # Monday
-#     "Monaco",       # Tuesday
-#     "Spa",          # Wednesday
-#     "Abu Dhabi",    # Thursday
-#     "COTA",         # Friday
-#     "Nurburgring",  # Saturday
-#     "Imola",        # Sunday
-# ]
+def bar(surf, rect, val, lo, hi, color):
+    pygame.draw.rect(surf, DARK, rect)
+    pygame.draw.rect(surf, BORDER_DIM, rect, 1)
+    pct  = max(0, min(1, (val - lo) / (hi - lo)))
+    fill = pygame.Rect(rect.x, rect.y, int(rect.w * pct), rect.h)
+    if fill.w > 0:
+        pygame.draw.rect(surf, color, fill)
 
-# TRACK_INFO = {
-#     "Imola":       {"file": "track_images/imola.png",       "corners": 19, "length": "4.9"},
-#     "Silverstone": {"file": "track_images/silverstone.png", "corners": 18, "length": "5.9"},
-#     "Monaco":      {"file": "track_images/monaco.png",      "corners": 19, "length": "3.3"},
-#     "Spa":         {"file": "track_images/spa.png",         "corners": 19, "length": "7.0"},
-#     "Abu Dhabi":   {"file": "track_images/abu_dhabi.png",   "corners": 16, "length": "5.3"},
-#     "COTA":        {"file": "track_images/cota.png",        "corners": 20, "length": "5.5"},
-#     "Nurburgring": {"file": "track_images/nurburgring.png", "corners": 15, "length": "5.1"},
-#     "Bahrain":     {"file": "track_images/bahrain.png",     "corners": 15, "length": "5.4"},
-# }
+def graph(surf, rect, history, lo, hi, color, centerline=False):
+    pygame.draw.rect(surf, DARK, rect)
+    pygame.draw.rect(surf, BORDER_DIM, rect, 1)
+    if centerline:
+        cy = rect.y + rect.h // 2
+        for x in range(rect.x, rect.x + rect.w, 8):
+            pygame.draw.line(surf, BORDER, (x, cy), (x + 4, cy), 1)
+    if len(history) < 2:
+        return
+    pts = []
+    for i, v in enumerate(history):
+        x   = rect.x + int(i / (len(history) - 1) * rect.w)
+        pct = max(0, min(1, (v - lo) / (hi - lo)))
+        y   = rect.y + rect.h - int(pct * rect.h)
+        pts.append((x, max(rect.y + 1, min(rect.y + rect.h - 1, y))))
+    pygame.draw.lines(surf, color, False, pts, 2)
+    surf.blit(FONT_SM.render(str(lo),  True, TEXT_DIM), (rect.x + 3, rect.y + rect.h - 14))
+    surf.blit(FONT_SM.render(str(hi),  True, TEXT_DIM), (rect.x + 3, rect.y + 2))
+    surf.blit(FONT_SM.render("NOW",    True, TEXT_DIM), (rect.x + rect.w - 30, rect.y + rect.h - 14))
 
-# def todays_track():
-#     dow = datetime.datetime.today().weekday()
-#     return DOW_TRACK[dow]
 
-# track_name = todays_track()
-# info       = TRACK_INFO[track_name]
+# ── Input handler ─────────────────────────────────────────────
+class InputHandler:
+    """Reads keyboard or Xbox controller and returns angle + throttle."""
+    DEAD_ZONE = 0.08
 
-# # Load background — scale to window
-# try:
-#     bg_raw = pygame.image.load(info["file"]).convert()
-#     bg_img = pygame.transform.scale(bg_raw, (W, H))
-#     HAS_BG = True
-#     print(f"Loaded background: {info['file']}")
-# except Exception as e:
-#     HAS_BG = False
-#     print(f"Could not load background ({e}) — using dark fill")
+    def __init__(self):
+        pygame.joystick.init()
+        self.joy = None
+        if pygame.joystick.get_count() > 0:
+            self.joy = pygame.joystick.Joystick(0)
+            self.joy.init()
 
-# # ─── Side overlay surfaces (drawn once, reused every frame) ──────────────────
-# # Left strip: semi-transparent dark gradient for graph readability
-# # Right strip: same for data readability
+        self.angle   = 110      # 80–130
+        self.throttle = 0.0    # 0.0–1.0 (maps to voltage)
 
-# OVERLAY_W = 255   # width of each side overlay
+    def update(self, keys):
+        # ── Keyboard ──────────────────────────────────────────
+        if keys[pygame.K_LEFT]:
+            self.angle = max(80,  self.angle - 2)
+        elif keys[pygame.K_RIGHT]:
+            self.angle = min(130, self.angle + 2)
+        else:
+            # Snap back to center when no key held
+            if self.angle < 110:
+                self.angle = min(110, self.angle + 2)
+            elif self.angle > 110:
+                self.angle = max(110, self.angle - 2)
 
-# left_overlay  = pygame.Surface((OVERLAY_W, H), pygame.SRCALPHA)
-# right_overlay = pygame.Surface((OVERLAY_W, H), pygame.SRCALPHA)
+        if keys[pygame.K_UP]:
+            self.throttle = min(1.0, self.throttle + 0.03)
+        else:
+            self.throttle = max(0.0, self.throttle - 0.05)
 
-# # Gradient: opaque at edge → transparent toward centre
-# for x in range(OVERLAY_W):
-#     alpha = int(200 * (1 - x / OVERLAY_W) ** 0.6)
-#     pygame.draw.line(left_overlay,  (8, 10, 14, alpha), (x, 0), (x, H))
-#     pygame.draw.line(right_overlay, (8, 10, 14, alpha), (OVERLAY_W - 1 - x, 0), (OVERLAY_W - 1 - x, H))
+        # ── Xbox controller (overrides keyboard if connected) ──
+        if self.joy:
+            pygame.event.pump()
 
-# # ─── Controller ──────────────────────────────────────────────────────────────
+            # Left stick X → steering
+            raw = self.joy.get_axis(0)
+            if abs(raw) < self.DEAD_ZONE:
+                raw = 0.0
+            self.angle = int(80 + (raw + 1.0) / 2.0 * 50)
 
-# joystick = None
-# if pygame.joystick.get_count() > 0:
-#     joystick = pygame.joystick.Joystick(0)
-#     joystick.init()
-#     ctrl_name = joystick.get_name()[:22]
-#     print(f"Connected: {ctrl_name}")
-# else:
-#     ctrl_name = "KEYBOARD"
-#     print("Keyboard mode — Arrows, L = reset lap, Esc = quit")
+            # Right trigger (axis 5 on Xbox, range -1 to +1)
+            try:
+                trig = (self.joy.get_axis(5) + 1) / 2   # normalize 0–1
+            except:
+                trig = 0.0
+            self.throttle = trig
 
-# # ─── State ───────────────────────────────────────────────────────────────────
+        return self.angle, self.throttle
 
-# angle       = 90
-# speed_pct   = 0.0
-# direction   = "FWD"
-# send_count  = 0
-# start_time  = time.time()
-# lap_start   = time.time()
-# tick        = 0
-# response_ms = 0
-# charge_pct  = 100
 
-# MAX_HIST    = 120
-# pos_history = [0.0] * MAX_HIST
-# vel_history = [0.0] * MAX_HIST
+# ── Dashboard ─────────────────────────────────────────────────
+class Dashboard:
+    def __init__(self, screen):
+        self.screen     = screen
+        self.start_time = time.time()
+        self.battery    = 100.0
+        max_pts         = HISTORY_SECS * FPS
+        self.spd_hist   = deque(maxlen=max_pts)
+        self.ang_hist   = deque(maxlen=max_pts)
 
-# # ─── Drawing helpers ─────────────────────────────────────────────────────────
+    def draw(self, angle, speed, throttle):
+        self.battery = max(0, self.battery - 0.003)
+        self.spd_hist.append(speed)
+        self.ang_hist.append(angle)
 
-# def txt(surf, text, font, color, x, y, anchor="topleft"):
-#     s = font.render(str(text), True, color)
-#     r = s.get_rect(**{anchor: (x, y)})
-#     surf.blit(s, r)
+        s = self.screen
+        s.fill(BG)
+        W, H    = s.get_size()
+        PAD     = 14
+        LW      = 290          # left column width
+        RW      = W - LW - PAD * 3
+        TOP     = 46
+        PH      = (H - TOP - PAD * 5) // 4   # panel height
+        GH      = (H - TOP - PAD * 3) // 2   # graph height
+        px, gx  = PAD, PAD * 2 + LW
 
-# def alpha_rect(surf, rect, color_rgba):
-#     s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-#     s.fill(color_rgba)
-#     surf.blit(s, rect.topleft)
+        # ── Header ────────────────────────────────────────────
+        s.blit(FONT_HDR.render("ENGINEER DASHBOARD", True, PURPLE), (PAD, PAD))
+        elapsed = int(time.time() - self.start_time)
+        sess    = FONT_SM.render(f"SESSION  {elapsed//60:02d}:{elapsed%60:02d}", True, TEXT_DIM)
+        s.blit(sess, (W - sess.get_width() - PAD, PAD + 4))
+        hint = FONT_SM.render("ESC: back  |  ARROWS / L-STICK: steer  |  UP / R-TRIG: throttle", True, BORDER)
+        s.blit(hint, (PAD, 30))
+        pygame.draw.line(s, BORDER_DIM, (PAD, 42), (W - PAD, 42), 1)
 
-# def hbar(surf, rect, pct, fill):
-#     """Throttle bar — bg is a translucent rect, fill is solid."""
-#     alpha_rect(surf, rect, (40, 42, 50, 140))
-#     if pct > 0.001:
-#         filled = pygame.Rect(rect.x, rect.y, max(4, int(rect.width * min(pct, 1.0))), rect.height)
-#         pygame.draw.rect(surf, fill, filled, border_radius=2)
+        # ── Steering ──────────────────────────────────────────
+        r1 = pygame.Rect(px, TOP, LW, PH)
+        panel(s, r1, "STEERING ANGLE")
+        s.blit(FONT_LG.render(str(angle), True, TEXT), (r1.x + 10, r1.y + 22))
+        s.blit(FONT_SM.render("DEG", True, TEXT_DIM), (r1.x + 60, r1.y + 38))
+        br = pygame.Rect(r1.x + 10, r1.y + PH - 32, LW - 20, 12)
+        bar(s, br, angle, 80, 130, PURPLE)
+        pct    = (angle - 80) / 50
+        needle = br.x + int(pct * br.w)
+        pygame.draw.rect(s, PURPLE, (needle - 3, br.y - 2, 6, br.h + 4))
+        cx = br.x + br.w // 2
+        pygame.draw.line(s, BORDER, (cx, br.y - 3), (cx, br.y + br.h + 3), 1)
+        for lbl, xp in [("L", br.x), ("CTR", cx - 10), ("R", br.x + br.w - 8)]:
+            s.blit(FONT_SM.render(lbl, True, TEXT_DIM), (xp, br.y + br.h + 3))
 
-# def draw_steering_bar(surf, rect, angle_deg):
-#     """Horizontal bar with sliding marker."""
-#     alpha_rect(surf, rect, (40, 42, 50, 140))
-#     cx   = rect.centerx
-#     norm = (angle_deg - 90) / 90.0
-#     mx   = cx + int(norm * (rect.width // 2 - 8))
-#     # centre tick
-#     pygame.draw.line(surf, (80, 84, 95), (cx, rect.y), (cx, rect.bottom))
-#     # marker
-#     pygame.draw.rect(surf, STEER_MARKER,
-#                      pygame.Rect(mx - 5, rect.y - 3, 10, rect.height + 6),
-#                      border_radius=2)
+        # ── Speed ─────────────────────────────────────────────
+        r2 = pygame.Rect(px, TOP + PH + PAD, LW, PH)
+        panel(s, r2, "SPEED")
+        s.blit(FONT_LG.render(f"{speed:.1f}", True, TEXT), (r2.x + 10, r2.y + 22))
+        s.blit(FONT_SM.render("KM/H", True, TEXT_DIM), (r2.x + 90, r2.y + 38))
+        sb = pygame.Rect(r2.x + 10, r2.y + PH - 32, LW - 20, 12)
+        bar(s, sb, speed, 0, SPEED_MAX, BLUE)
+        s.blit(FONT_SM.render("0", True, TEXT_DIM), (sb.x, sb.y + sb.h + 3))
+        mx = FONT_SM.render(f"{SPEED_MAX}", True, TEXT_DIM)
+        s.blit(mx, (sb.x + sb.w - mx.get_width(), sb.y + sb.h + 3))
 
-# def draw_battery(surf, x, y, w, h, pct):
-#     col = TEXT_GREEN if pct > 40 else (TEXT_YELLOW if pct > 20 else TEXT_RED)
-#     alpha_rect(surf, pygame.Rect(x, y, w, h), (40, 42, 50, 160))
-#     fill_w = max(2, int((w - 4) * pct / 100))
-#     pygame.draw.rect(surf, col, pygame.Rect(x + 2, y + 2, fill_w, h - 4), border_radius=1)
-#     pygame.draw.rect(surf, (80, 84, 95), pygame.Rect(x + w, y + h // 3, 3, h // 3))
+        # ── Battery ───────────────────────────────────────────
+        r3 = pygame.Rect(px, TOP + (PH + PAD) * 2, LW, PH)
+        panel(s, r3, "BATTERY")
+        bat  = int(self.battery)
+        bcol = GREEN if bat > 40 else (YELLOW if bat > 20 else RED)
+        s.blit(FONT_LG.render(f"{bat}%", True, bcol), (r3.x + 10, r3.y + 22))
+        bw = (LW - 20 - 16) // 5
+        for i in range(5):
+            bx     = r3.x + 10 + i * (bw + 4)
+            by     = r3.y + PH - 32
+            filled = (i * 20) < bat
+            pygame.draw.rect(s, bcol if filled else DARK, (bx, by, bw, 12))
+            pygame.draw.rect(s, BORDER_DIM, (bx, by, bw, 12), 1)
 
-# def draw_graph(surf, rect, history, y_label):
-#     """Floating graph — no background box, just axes and line."""
-#     # Faint axis lines only
-#     pygame.draw.line(surf, GRAPH_AXIS, (rect.x, rect.y),     (rect.x, rect.bottom), 1)
-#     pygame.draw.line(surf, GRAPH_AXIS, (rect.x, rect.bottom), (rect.right, rect.bottom), 1)
+        # ── Connection ────────────────────────────────────────
+        r4 = pygame.Rect(px, TOP + (PH + PAD) * 3, LW, PH)
+        panel(s, r4, "CONNECTION")
+        for i, (k, v, col) in enumerate([
+            ("STATUS", "ONLINE",       GREEN),
+            ("PING",   "12 MS",        TEXT),
+            ("ESP32",  ESP32_IP,       PURPLE),
+        ]):
+            ry = r4.y + 26 + i * 20
+            s.blit(FONT_SM.render(k, True, TEXT_DIM), (r4.x + 10, ry))
+            vt = FONT_SM.render(v, True, col)
+            s.blit(vt, (r4.x + LW - vt.get_width() - 10, ry))
 
-#     # Rotated Y label
-#     ls = f_tiny.render(y_label, True, TEXT_DIM)
-#     lr = pygame.transform.rotate(ls, 90)
-#     surf.blit(lr, (rect.x - lr.get_width() - 4,
-#                    rect.centery - lr.get_height() // 2))
-#     txt(surf, "t", f_tiny, TEXT_DIM, rect.right - 8, rect.bottom + 3)
+        # ── Speed graph ───────────────────────────────────────
+        rg1 = pygame.Rect(gx, TOP, RW, GH)
+        panel(s, rg1, f"SPEED / TIME  (20s)  max {SPEED_MAX} km/h")
+        graph(s, pygame.Rect(rg1.x+10, rg1.y+24, rg1.w-20, rg1.h-34),
+              self.spd_hist, 0, SPEED_MAX, BLUE)
 
-#     # Plot
-#     mn = 0.0
-#     mx = max(max(history), 0.001)
-#     pts = []
-#     for i, v in enumerate(history):
-#         px = rect.x + int(i / (MAX_HIST - 1) * rect.width)
-#         py = rect.bottom - int((v - mn) / mx * (rect.height - 4)) - 2
-#         py = max(rect.y + 1, min(rect.bottom - 1, py))
-#         pts.append((px, py))
-#     if len(pts) >= 2:
-#         pygame.draw.lines(surf, GRAPH_LINE, False, pts, 1)
+        # ── Steering graph ────────────────────────────────────
+        rg2 = pygame.Rect(gx, TOP + GH + PAD, RW, GH)
+        panel(s, rg2, "STEERING / TIME  (20s)")
+        graph(s, pygame.Rect(rg2.x+10, rg2.y+24, rg2.w-20, rg2.h-34),
+              self.ang_hist, 80, 130, PURPLE, centerline=True)
 
-# # ─── Main Draw ───────────────────────────────────────────────────────────────
+        pygame.display.flip()
 
-# def draw(angle, speed_pct, direction, send_count, tick):
 
-#     elapsed = time.time() - start_time
-#     lap_t   = time.time() - lap_start
-#     lap_str = f"{int(lap_t//60)}:{int(lap_t%60):02d}.{int((lap_t%1)*10)}"
+# ── Main ──────────────────────────────────────────────────────
+def run(screen=None):
+    standalone = screen is None
+    if standalone:
+        screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption(TITLE)
 
-#     # ── Background ─────────────────────────────────────────────────────────
-#     if HAS_BG:
-#         screen.blit(bg_img, (0, 0))
-#     else:
-#         screen.fill((10, 12, 15))
+    clock   = pygame.time.Clock()
+    dash    = Dashboard(screen)
+    inp     = InputHandler()
 
-#     # ── Side overlays ──────────────────────────────────────────────────────
-#     screen.blit(left_overlay,  (0, 0))
-#     screen.blit(right_overlay, (W - OVERLAY_W, 0))
+    while True:
+        keys = pygame.key.get_pressed()
 
-#     # ════════════════════════════════════════════════════════════════════════
-#     # LEFT SIDE — Graphs (floating, no box)
-#     # ════════════════════════════════════════════════════════════════════════
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if standalone:
+                    pygame.quit(); sys.exit()
+                else:
+                    return
 
-#     GX = 52
-#     GW = 178
-#     GH = 105
+        angle, throttle = inp.update(keys)
+        volts = throttle * MOTOR_VOLTAGE
+        speed = calc_speed(volts)
 
-#     g1 = pygame.Rect(GX, 30,  GW, GH)
-#     g2 = pygame.Rect(GX, 165, GW, GH)
+        dash.draw(angle, speed, throttle)
+        clock.tick(FPS)
 
-#     draw_graph(screen, g1, pos_history, "x Position")
-#     draw_graph(screen, g2, vel_history, "V Velocity")
 
-#     # ════════════════════════════════════════════════════════════════════════
-#     # RIGHT SIDE — Throttle / Steering / Data (floating text)
-#     # ════════════════════════════════════════════════════════════════════════
-
-#     RX  = W - OVERLAY_W + 16   # left edge of right column
-#     RXR = W - 18               # right-align anchor
-
-#     # ── THROTTLE ───────────────────────────────────────────────────────────
-#     txt(screen, "THROTTLE", f_label, TEXT_DIM, RX, 18)
-#     spd_int = int(speed_pct)
-#     tc = TEXT_GREEN if spd_int < 40 else (TEXT_YELLOW if spd_int < 75 else TEXT_RED)
-#     txt(screen, f"{spd_int}%", f_huge, tc, RXR, 32, anchor="topright")
-#     hbar(screen, pygame.Rect(RX, 96, RXR - RX, 10), speed_pct / 100, THROTTLE_FILL)
-
-#     # ── STEERING ───────────────────────────────────────────────────────────
-#     txt(screen, "STEERING ANGLE", f_label, TEXT_DIM, RX, 122)
-#     nd   = angle - 90
-#     side = " L" if nd < 0 else (" R" if nd > 0 else "")
-#     txt(screen, f"{abs(nd)}°{side}", f_big, TEXT_WHITE, RXR, 138, anchor="topright")
-#     draw_steering_bar(screen, pygame.Rect(RX, 184, RXR - RX, 10), angle)
-
-#     # ── DATA ───────────────────────────────────────────────────────────────
-#     txt(screen, "DATA", f_med, TEXT_WHITE, RXR, 212, anchor="topright")
-#     draw_battery(screen, RXR - 54, 240, 50, 14, charge_pct)
-
-#     mode = "Sport" if speed_pct > 50 else "Comfort"
-#     rows = [
-#         ("Power",    f"{max(2.8, 4.2 - (100-charge_pct)*0.015):.1f}v"),
-#         ("Charge",   f"{charge_pct}%"),
-#         ("Lap time", lap_str),
-#         ("Mode",     mode),
-#         ("Response", f"{response_ms}ms"),
-#         ("Packets",  str(send_count)),
-#     ]
-#     for i, (label, val) in enumerate(rows):
-#         ry = 265 + i * 32
-#         txt(screen, label + ":", f_label,   TEXT_DIM,   RX,   ry)
-#         txt(screen, val,         f_label_b, TEXT_WHITE,  RXR,  ry, anchor="topright")
-
-#     # Controller row (smaller, at the bottom of data)
-#     txt(screen, "Controller:", f_label, TEXT_DIM,  RX,  265 + len(rows) * 32)
-#     txt(screen, ctrl_name,     f_tiny,  TEXT_WHITE, RXR, 268 + len(rows) * 32, anchor="topright")
-
-#     pygame.display.flip()
-
-# # ─── Main Loop ───────────────────────────────────────────────────────────────
-
-# running = True
-
-# while running:
-#     for event in pygame.event.get():
-#         if event.type == pygame.QUIT:
-#             running = False
-#         if event.type == pygame.KEYDOWN:
-#             if event.key == pygame.K_ESCAPE:
-#                 running = False
-#             if event.key == pygame.K_l:
-#                 lap_start = time.time()
-
-#     # ── Input ─────────────────────────────────────────────────────────────
-#     if joystick:
-#         axis_val  = joystick.get_axis(0)
-#         angle     = int((axis_val + 1) * 90)
-#         try:
-#             t_raw     = joystick.get_axis(5)
-#             speed_pct = max(0.0, (t_raw + 1) / 2 * 100)
-#         except:
-#             speed_pct = 0.0
-#         try:
-#             direction = "REV" if joystick.get_axis(2) > 0.1 else "FWD"
-#         except:
-#             direction = "FWD"
-#     else:
-#         keys = pygame.key.get_pressed()
-#         if keys[pygame.K_LEFT]:
-#             angle = max(0, angle - 3)
-#         elif keys[pygame.K_RIGHT]:
-#             angle = min(180, angle + 3)
-#         else:
-#             if angle < 90:   angle = min(90, angle + 2)
-#             elif angle > 90: angle = max(90, angle - 2)
-
-#         if keys[pygame.K_UP]:
-#             speed_pct = min(100.0, speed_pct + 4)
-#             direction = "FWD"
-#         elif keys[pygame.K_DOWN]:
-#             speed_pct = min(100.0, speed_pct + 4)
-#             direction = "REV"
-#         else:
-#             speed_pct = max(0.0, speed_pct - 3)
-
-#     # Battery drain (1% per 5s)
-#     charge_pct = max(0, 100 - int((time.time() - start_time) / 5))
-
-#     # Graphs — only real input, no noise
-#     vel_val = speed_pct / 100.0
-#     pos_history.append(
-#         pos_history[-1] + vel_val * 0.02 if vel_val > 0 else pos_history[-1]
-#     )
-#     vel_history.append(vel_val)
-#     pos_history.pop(0)
-#     vel_history.pop(0)
-
-#     # UDP send
-#     t0 = time.time()
-#     try:
-#         sock.sendto(str(angle).encode(),
-#                     (constants.Network.ESP_IP, constants.Network.UDP_PORT))
-#         send_count  += 1
-#         response_ms  = max(1, int((time.time() - t0) * 1000))
-#     except:
-#         pass
-
-#     draw(angle, speed_pct, direction, send_count, tick)
-#     tick += 1
-#     clock.tick(50)
-
-# pygame.quit()
+if __name__ == "__main__":
+    run()
