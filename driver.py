@@ -4,7 +4,6 @@ import struct
 import math
 import time
 import sys
-
 import constants
 
 def get_telemetry(throttle):
@@ -21,22 +20,26 @@ class InputHandler:
         self.joy = pygame.joystick.Joystick(0) if pygame.joystick.get_count() > 0 else None
         if self.joy: 
             self.joy.init()
-        self.angle = 110      
+        self.angle = constants.Servo.CENTER     
         self.throttle = 0.0    
 
     def update(self, keys):
-        if keys[pygame.K_LEFT]:    self.angle = max(80,  self.angle - 2)
-        elif keys[pygame.K_RIGHT]: self.angle = min(130, self.angle + 2)
-        else:                      self.angle = 110
-        
-        if keys[pygame.K_UP]:      self.throttle = min(1.0, self.throttle + 0.04)
-        else:                      self.throttle = max(0.0, self.throttle - 0.06)
+        if keys[pygame.K_LEFT]:    
+            self.angle = max(constants.Servo.MIN_ANGLE, self.angle - constants.Servo.SPEED)
+        elif keys[pygame.K_RIGHT]: 
+            self.angle = min(constants.Servo.MAX_ANGLE, self.angle + constants.Servo.SPEED)
+        else:                      
+            self.angle = constants.Servo.CENTER
 
         if self.joy:
             pygame.event.pump()
             raw_steer = self.joy.get_axis(0)
-            if abs(raw_steer) < 0.08: raw_steer = 0.0
-            self.angle = int(80 + (raw_steer + 1.0) / 2.0 * 50)
+            if abs(raw_steer) < 0.08: 
+                raw_steer = 0.0
+                
+            angle_range = constants.Servo.MAX_ANGLE - constants.Servo.MIN_ANGLE
+            self.angle = int(constants.Servo.MIN_ANGLE + (raw_steer + 1.0) / 2.0 * angle_range)
+            
             try:    
                 self.throttle = (self.joy.get_axis(5) + 1) / 2
             except: 

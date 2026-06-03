@@ -36,6 +36,12 @@ class Physics:
     V_MAX_MS = (RPM_MAX * 2 * math.pi * WHEEL_R) / 60
     SPEED_MAX = round(V_MAX_MS * 3.6, 1)
 
+class Servo:
+    MIN_ANGLE = 87
+    MAX_ANGLE = 140 
+    CENTER = 117
+    SPEED = 2
+
 class Graphics:
     FPS = 45
     WINDOW_WIDTH = 1000
@@ -84,5 +90,3 @@ class Graphics:
         GAUGE_BG         = (26, 26, 46)       
         GAUGE_FILL       = (248, 113, 113)    
         GAUGE_FILL_LOW   = (56, 189, 248)     
-        SCANLINE_COLOR   = (255, 255, 255)   
-        GRID_COLOR       = (20, 24, 34)
